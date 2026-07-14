@@ -2,76 +2,68 @@
 
 ChildVision is an advanced, parent-facing AI screening and monitoring platform designed to support early detection of developmental delays, malnutrition indicators, and environmental safety risks in toddlers (aged 0 to 5 years). 
 
-This repository contains the **Phase 0 Dashboard Portal Skeleton**, built as a responsive, high-performance web application utilizing **Next.js (App Router)** and **Vanilla CSS** for premium aesthetics and maximum deployment flexibility.
+This repository contains the **Phase 0 Dashboard Portal Skeleton**, built as a responsive, high-performance web application utilizing **Next.js (App Router)**, **Vanilla CSS** for premium aesthetics, and **Firebase** for cloud authentication and database storage.
 
 ---
 
-## 🌟 Key Features (Phase 0 Skeleton)
+## 🌟 Key Features (Phase 0 Complete)
 
 - **Premium Responsive Landing Page**: A beautifully designed product overview, module descriptions, and quick navigation.
-- **Mock Authentication & Registration**: Parents can register their account, detail their toddler's profile (name, gender, date of birth), sign in, and establish active dashboard portal sessions.
-- **Dynamic Age Calculation**: Translates toddler birthdates into months, conforming to WHO anthropometric tracking standards.
+- **Firebase Cloud Authentication**: Secure parent registration and login running in the cloud via Firebase Auth (`createUserWithEmailAndPassword` & `signInWithEmailAndPassword`).
+- **Firestore User Profiles**: On sign-up, stores parent and toddler data (name, gender, date of birth) in a Firestore `users` collection.
+- **Dynamic Age Calculation**: Translates toddler birthdates into months dynamically, conforming to WHO anthropometric standards.
+- **Secure Portal Sessions**: Implements Firebase state observers (`onAuthStateChanged`). Unauthenticated attempts to access `/dashboard` are immediately redirected to `/login`.
 - **Unified Parent Dashboard**: 
   - **Daily Snapshot & Metrics**: Dynamic placeholder panels for height, weight, and safety status.
   - **Circular Wellness Score**: Interactive radial score indicator showing scanning readiness.
   - **Tabbed Module Navigation**: Accessible layouts displaying future capabilities for each of the 4 core AI modules.
-  - **Database Configuration Settings**: Inputs for future MongoDB or Firebase Web configurations to support longitudinal data persistence.
-
----
-
-## 🛠️ The 4 Core AI Modules (Future Roadmap)
-
-### 🟦 Module 1 — Physical Growth Monitoring
-- **Height Estimation**: Dual-coordinate keypoint parsing using MediaPipe Pose, scaled with known 30cm calibration references.
-- **Weight Estimation**: Body volume approximations integrating 2D silhouettes and MiDaS monocular depth maps.
-- **WHO Z-Scores**: Dynamic statistical calculations lookup (LMS method) to map stunting and wasting percentages.
-- **Malnutrition CNN**: Transfer learning on pre-trained ResNet-50 / EfficientNet models to classify physical malnutrition.
-
-### 🟩 Module 2 — Nutritional Health Screening
-- **Conjunctival Pallor**: Precise eyelid segmentation mapped to the LAB color space (A-channel) for anemia screening.
-- **Oedema Analysis**: Cheekbone-to-jaw ratio landmark math to spot protein-deficiency swelling.
-- **MUAC Measurements**: Mask R-CNN upper arm segmentation + dual-view ellipse formula ($C \approx \pi \sqrt{2(a^2 + b^2)}$) utilizing an A4 paper calibration reference.
-- **Meal Logs**: Food classification (Food-101) linked to the USDA API for dietary diversity cross-referencing.
-
-### 🟨 Module 3 — Behavioral & Cognitive Monitoring
-- **Motor Milestones**: ViTPose/HRNet gross motor classification (crawling, standing, walking, gait analysis).
-- **Gaze Tracking**: MediaPipe Face Mesh iris positioning to calculate social gaze ratios (ASD screening signal).
-- **Sound-Response**: Evaluates auditory-response latency (3D head yaw/pitch orientation checks after audio triggers).
-- **Social & Play**: YOLOv8-pose multi-person tracking, mutual gaze vectors, and VideoMAE play-type classifiers.
-
-### 🟥 Module 4 — Environment Interaction & Safety
-- **Danger Zones**: OpenCV dynamic polygon boundaries around household hazards (stairs, kitchen) with YOLOv8 baby trackers.
-- **Safety Logs**: Fall detection (torso angle + velocity limits) and night-mode prone sleep posture alerts.
-- **Screen Time & Objects**: Gaze-to-screen intersection logs and cognitive stimulation interaction timers.
+  - **Configuration Settings View**: Displays registered profile details and connection references.
 
 ---
 
 ## 🚀 Getting Started
 
 ### Prerequisites
-
 - Node.js (v18 or higher)
 - npm (v9 or higher)
+- A Firebase project ([Firebase Console](https://console.firebase.google.com/))
 
-### Installation
+### Configuration (Environment Variables)
 
-1. Clone the repository:
+To test the application locally, you must connect it to your Firebase instance:
+
+1. Create a `.env.local` file at the root of the project:
    ```bash
-   git clone https://github.com/GamerBhai02/ChildVision_MP.git
-   cd ChildVision_MP
+   cp .env.example .env.local
+   ```
+2. Open your new `.env.local` file and populate it with your Firebase Web App credentials:
+   ```env
+   NEXT_PUBLIC_FIREBASE_API_KEY=AIzaSyA1...
+   NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your_project_id.firebaseapp.com
+   NEXT_PUBLIC_FIREBASE_PROJECT_ID=your_project_id
+   NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your_project_id.appspot.com
+   NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your_messaging_sender_id
+   NEXT_PUBLIC_FIREBASE_APP_ID=your_app_id
    ```
 
-2. Install dependencies:
+### Firebase Setup
+Before launching, make sure the following are enabled in your **Firebase Console**:
+1. **Authentication**: Enable the **Email/Password** sign-in provider.
+2. **Cloud Firestore**: Create a database (start in **Test Mode** for initial local testing).
+
+### Running Locally
+
+1. Install dependencies:
    ```bash
    npm install
    ```
 
-3. Run the local development server:
+2. Run the local development server:
    ```bash
    npm run dev
    ```
 
-4. Open [http://localhost:3000](http://localhost:3000) in your browser to view the app.
+3. Open [http://localhost:3000](http://localhost:3000) in your browser. Register an account and watch the console collections update in real time.
 
 ---
 
@@ -80,19 +72,10 @@ This repository contains the **Phase 0 Dashboard Portal Skeleton**, built as a r
 This application is fully build-verified and ready for instant deployment on cloud platforms.
 
 ### Vercel (Recommended)
-The project is optimized for Vercel serverless functions and frontend delivery.
 1. Sign in to your [Vercel Dashboard](https://vercel.com).
 2. Click **Add New** > **Project** and import `ChildVision_MP` from your GitHub account.
-3. Leave build settings as default (Next.js preset) and click **Deploy**.
-
-### Render
-To deploy on Render:
-1. Create a new **Web Service** on [Render](https://render.com).
-2. Connect this GitHub repository.
-3. Configure the following settings:
-   - **Environment**: `Node`
-   - **Build Command**: `npm run build`
-   - **Start Command**: `npm run start`
+3. In the **Environment Variables** configuration section, copy the keys and values from your `.env.local` file.
+4. Click **Deploy**.
 
 ---
 
@@ -102,10 +85,12 @@ To deploy on Render:
 ChildVision_MP/
 ├── public/                 # Static assets
 └── src/
+    ├── lib/
+    │   └── firebase.ts     # Firebase Auth and Firestore Initialization
     └── app/                # App Router Pages
-        ├── dashboard/      # Portal View (Overview, Module Tabs, DB Configuration)
-        ├── login/          # Parent Login Form
-        ├── signup/         # Parent Registration & Toddler Setup
+        ├── dashboard/      # Portal View (Overview, Module Tabs, Config)
+        ├── login/          # Firebase Authentication login
+        ├── signup/         # Firebase parent registration and toddler details
         ├── globals.css     # Premium Vanilla CSS Design Tokens & Styles
         ├── layout.tsx      # Global Meta Tags & Page Glow Wrappers
         └── page.tsx        # Product Landing Page
@@ -113,6 +98,9 @@ ChildVision_MP/
 
 ---
 
-## 🔒 Security & Privacy
+## 🛠️ Future AI Roadmap (Next Phases)
 
-ChildVision is built on data-privacy principles. Face recognition and video parsing are client-side operations (using edge models) where possible. No audio/video data is transmitted without explicit parental authorization. Database inputs are securely configured via parent settings.
+- **Module 1 — Physical Growth**: Height estimation using pose scale vectors and weight estimation via MiDaS depth cylinder approximations.
+- **Module 2 — Nutritional Health**: Anemia conjunctiva pallor analysis (LAB A-channel), cheek Oedema ratios, and MUAC arm segmentation.
+- **Module 3 — Behavioral & Cognitive**: Motor coordination milestone classifiers (ViTPose), gaze-ASD screeners, name-response latency, and VideoMAE play patterns.
+- **Module 4 — Environment & Safety**: YOLOv8 infant detection inside custom OpenCV safety polygons, sleep posture safety checks, and screen time calculators.
