@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { 
@@ -10,29 +10,43 @@ import {
   EyeOff, 
   Activity, 
   ArrowRight,
-  Loader2
+  Loader2,
+  AlertTriangle
 } from "lucide-react";
+import { auth, isFirebaseConfigured } from "@/lib/firebase";
+import { signInWithEmailAndPassword } from "firebase/auth";
 
 export default function LoginPage() {
   const router = useRouter();
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [isConfigured, setIsConfigured] = useState(false);
 
   const [formData, setFormData] = useState({
     email: "",
     password: "",
   });
 
+  useEffect(() => {
+    setIsConfigured(isFirebaseConfigured());
+  }, []);
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setLoading(true);
+
+    if (!isConfigured) {
+      setError("Firebase is not configured. Please create a .env.local file in your project root with your credentials.");
+      setLoading(false);
+      return;
+    }
 
     const { email, password } = formData;
 
@@ -43,31 +57,24 @@ export default function LoginPage() {
     }
 
     try {
-      // Retrieve existing users from localStorage
-      const existingUsersRaw = localStorage.getItem("childvision_users");
-      const existingUsers = existingUsersRaw ? JSON.parse(existingUsersRaw) : [];
-
-      // Look up user
-      const user = existingUsers.find(
-        (u: any) => u.email.toLowerCase() === email.toLowerCase() && u.password === password
-      );
-
-      if (!user) {
-        setError("Invalid email or password.");
-        setLoading(false);
-        return;
+      if (!auth) {
+        throw new Error("Firebase SDK was not initialized correctly.");
       }
 
-      // Set active session
-      localStorage.setItem("childvision_session", JSON.stringify(user));
+      // Authenticate user against Firebase Authentication service
+      await signInWithEmailAndPassword(auth!, email, password);
 
-      // Simulate a small network delay for realistic visual feedback
-      setTimeout(() => {
-        setLoading(false);
-        router.push("/dashboard");
-      }, 1000);
-    } catch (err) {
-      setError("An unexpected error occurred. Please try again.");
+      setLoading(false);
+      router.push("/dashboard");
+    } catch (err: any) {
+      console.error("Firebase Login Error:", err);
+      if (err.code === "auth/invalid-credential" || err.code === "auth/user-not-found" || err.code === "auth/wrong-password") {
+        setError("Invalid email or password.");
+      } else if (err.code === "auth/invalid-email") {
+        setError("Please enter a valid email address.");
+      } else {
+        setError(err.message || "An unexpected error occurred during login.");
+      }
       setLoading(false);
     }
   };
@@ -83,6 +90,17 @@ export default function LoginPage() {
           <h2 className="auth-title">Welcome Back</h2>
           <p className="auth-subtitle">Sign in to access your parent dashboard</p>
         </div>
+
+        {/* Warning if Firebase is not configured */}
+        {!isConfigured && (
+          <div className="alert-banner alert-danger" style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
+            <AlertTriangle size={18} style={{ flexShrink: 0, marginTop: "2px" }} />
+            <div>
+              <strong style={{ display: "block", marginBottom: "0.25rem" }}>Firebase Missing</strong>
+              Please configure environment variables in <code>.env.local</code> to enable signing in. See <code>.env.example</code>.
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="alert-banner alert-danger" id="login-error-banner">
@@ -103,6 +121,7 @@ export default function LoginPage() {
                 className="form-input input-icon-left"
                 placeholder="parent@example.com"
                 id="login-email"
+                disabled={!isConfigured}
                 required
               />
             </div>
@@ -111,7 +130,7 @@ export default function LoginPage() {
           <div className="form-group">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <label className="form-label">Password</label>
-              <a href="#" style={{ fontSize: "0.8rem", color: "var(--primary)" }} onClick={(e) => { e.preventDefault(); alert("Mock password reset link clicked! For Phase 0, please create a new account if you forgot your credentials."); }}>
+              <a href="#" style={{ fontSize: "0.8rem", color: "var(--primary)" }} onClick={(e) => { e.preventDefault(); alert("Please reset your password in the Firebase Console if you forgot it."); }}>
                 Forgot Password?
               </a>
             </div>
@@ -125,6 +144,7 @@ export default function LoginPage() {
                 className="form-input input-icon-left input-icon-right"
                 placeholder="••••••••"
                 id="login-password"
+                disabled={!isConfigured}
                 required
               />
               <span 
@@ -141,7 +161,7 @@ export default function LoginPage() {
             type="submit" 
             className="btn btn-primary" 
             style={{ width: "100%", marginTop: "0.5rem" }}
-            disabled={loading}
+            disabled={loading || !isConfigured}
             id="login-submit-btn"
           >
             {loading ? (

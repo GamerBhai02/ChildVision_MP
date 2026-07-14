@@ -25,6 +25,9 @@ import {
   Camera,
   Play
 } from "lucide-react";
+import { auth, db } from "@/lib/firebase";
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
 
 type ModuleTab = "overview" | "physical" | "nutrition" | "behavior" | "safety" | "settings";
 
@@ -40,35 +43,58 @@ export default function DashboardPage() {
     type: "info"
   });
 
-  // Database Connection settings form states
+  // Database Connection settings form states (retained for UI config updates)
   const [dbConfig, setDbConfig] = useState({
-    dbType: "mongodb",
+    dbType: "firebase",
     connectionString: "",
-    firebaseApiKey: "",
-    firebaseProjectId: "",
-    firebaseStorageBucket: ""
+    firebaseApiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "",
+    firebaseProjectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "",
+    firebaseStorageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || ""
   });
 
   useEffect(() => {
-    // Session Check
-    const activeSession = localStorage.getItem("childvision_session");
-    if (!activeSession) {
+    if (!auth || !db) {
+      // If Firebase SDK is not initialized (e.g. missing configs)
       router.push("/login");
       return;
     }
 
-    const user = JSON.parse(activeSession);
-    setSessionUser(user);
+    // Subscribe to Firebase Authentication state observer
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!firebaseUser) {
+        router.push("/login");
+        return;
+      }
 
-    // Calculate Child's Age in Months
-    if (user.childDob) {
-      const dob = new Date(user.childDob);
-      const now = new Date();
-      const diffYears = now.getFullYear() - dob.getFullYear();
-      const diffMonths = now.getMonth() - dob.getMonth();
-      const ageMonths = diffYears * 12 + diffMonths;
-      setChildAgeMonths(ageMonths >= 0 ? ageMonths : 0);
-    }
+      try {
+        // Fetch user data document from Firestore collection
+        const docRef = doc(db!, "users", firebaseUser.uid);
+        const docSnap = await getDoc(docRef);
+
+        if (docSnap.exists()) {
+          const userData = docSnap.data();
+          setSessionUser(userData);
+
+          // Calculate Child's Age in Months
+          if (userData.childDob) {
+            const dob = new Date(userData.childDob);
+            const now = new Date();
+            const diffYears = now.getFullYear() - dob.getFullYear();
+            const diffMonths = now.getMonth() - dob.getMonth();
+            const ageMonths = diffYears * 12 + diffMonths;
+            setChildAgeMonths(ageMonths >= 0 ? ageMonths : 0);
+          }
+        } else {
+          console.error("No user profile found in Firestore.");
+          router.push("/login");
+        }
+      } catch (err) {
+        console.error("Error reading Firestore profile:", err);
+        router.push("/login");
+      }
+    });
+
+    return () => unsubscribe();
   }, [router]);
 
   const showToastMessage = (msg: string, type: "success" | "info" = "info") => {
@@ -78,9 +104,15 @@ export default function DashboardPage() {
     }, 3000);
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("childvision_session");
-    router.push("/");
+  const handleLogout = async () => {
+    try {
+      if (auth) {
+        await signOut(auth);
+      }
+      router.push("/");
+    } catch (err) {
+      console.error("Error signing out:", err);
+    }
   };
 
   const handleSaveDbConfig = (e: React.FormEvent) => {
@@ -93,7 +125,7 @@ export default function DashboardPage() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", fontFamily: "var(--font-display)" }}>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "1rem" }}>
           <Activity className="logo-icon animate-spin" style={{ width: "40px", height: "40px" }} />
-          <p style={{ color: "var(--text-muted)", fontSize: "1.1rem" }}>Redirecting to portal...</p>
+          <p style={{ color: "var(--text-muted)", fontSize: "1.1rem" }}>Verifying session & loading profile...</p>
         </div>
       </div>
     );
@@ -251,10 +283,6 @@ export default function DashboardPage() {
             >
               <div className="profile-avatar">
                 {sessionUser.parentName.charAt(0).toUpperCase()}
-              </div>
-              <div className="profile-info" style={{ display: "none" }}> {/* Desktop Info */}
-                <span className="profile-name">{sessionUser.parentName}</span>
-                <span className="profile-role">Parent</span>
               </div>
             </div>
           </div>
@@ -569,7 +597,7 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* TAB 6: SETTINGS (Includes Database Integration placeholders) */}
+          {/* TAB 6: SETTINGS (Includes Database Integration) */}
           {activeTab === "settings" && (
             <div className="settings-container" id="view-content-settings">
               
@@ -607,7 +635,7 @@ export default function DashboardPage() {
                   <h3 style={{ fontSize: "1.2rem", fontWeight: "700" }}>Database Connection Settings</h3>
                 </div>
                 <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.5rem" }}>
-                  Configuring a persistent database allows storing longitudinal trends across weeks/months.
+                  Your database is configured using Firebase environment variables. Real connections for longitudinal metrics are active.
                 </p>
 
                 <form onSubmit={handleSaveDbConfig} style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
@@ -616,72 +644,47 @@ export default function DashboardPage() {
                     <select 
                       className="form-input"
                       value={dbConfig.dbType}
-                      onChange={(e) => setDbConfig({...dbConfig, dbType: e.target.value})}
+                      disabled
                       style={{ height: "45px", background: "rgba(255, 255, 255, 0.02)" }}
                     >
-                      <option value="mongodb" style={{ background: "#0f111c" }}>MongoDB Atlas (Document Store)</option>
-                      <option value="firebase" style={{ background: "#0f111c" }}>Firebase Cloud Store / Auth</option>
+                      <option value="firebase" style={{ background: "#0f111c" }}>Firebase Cloud Store / Auth (Active)</option>
                     </select>
                   </div>
 
-                  {dbConfig.dbType === "mongodb" ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                     <div className="form-group">
-                      <label className="form-label">MongoDB Connection URI</label>
+                      <label className="form-label">Firebase Web API Key</label>
                       <input 
                         type="text" 
-                        className="form-input" 
-                        value={dbConfig.connectionString}
-                        onChange={(e) => setDbConfig({...dbConfig, connectionString: e.target.value})}
-                        placeholder="mongodb+srv://user:pass@cluster.mongodb.net/childvision" 
-                        id="settings-db-mongo-uri"
+                        className="form-input"
+                        value={dbConfig.firebaseApiKey}
+                        disabled
+                        placeholder="Configured in env" 
                       />
-                      <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>
-                        Tip: Set the <code>MONGODB_URI</code> environment variable on Vercel for serverless API production.
-                      </span>
                     </div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
                       <div className="form-group">
-                        <label className="form-label">Firebase Web API Key</label>
+                        <label className="form-label">Firebase Project ID</label>
                         <input 
                           type="text" 
                           className="form-input"
-                          value={dbConfig.firebaseApiKey}
-                          onChange={(e) => setDbConfig({...dbConfig, firebaseApiKey: e.target.value})}
-                          placeholder="AIzaSyA1..." 
-                          id="settings-db-fb-key"
+                          value={dbConfig.firebaseProjectId}
+                          disabled
+                          placeholder="Configured in env" 
                         />
                       </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-                        <div className="form-group">
-                          <label className="form-label">Firebase Project ID</label>
-                          <input 
-                            type="text" 
-                            className="form-input"
-                            value={dbConfig.firebaseProjectId}
-                            onChange={(e) => setDbConfig({...dbConfig, firebaseProjectId: e.target.value})}
-                            placeholder="childvision-mp" 
-                            id="settings-db-fb-id"
-                          />
-                        </div>
-                        <div className="form-group">
-                          <label className="form-label">Storage Bucket</label>
-                          <input 
-                            type="text" 
-                            className="form-input"
-                            value={dbConfig.firebaseStorageBucket}
-                            onChange={(e) => setDbConfig({...dbConfig, firebaseStorageBucket: e.target.value})}
-                            placeholder="childvision-mp.appspot.com" 
-                            id="settings-db-fb-bucket"
-                          />
-                        </div>
+                      <div className="form-group">
+                        <label className="form-label">Storage Bucket</label>
+                        <input 
+                          type="text" 
+                          className="form-input"
+                          value={dbConfig.firebaseStorageBucket}
+                          disabled
+                          placeholder="Configured in env" 
+                        />
                       </div>
                     </div>
-                  )}
-
-                  <button type="submit" className="btn btn-primary" style={{ alignSelf: "flex-start" }} id="settings-db-save-btn">
-                    Save Configuration
-                  </button>
+                  </div>
                 </form>
               </div>
 

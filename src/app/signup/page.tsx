@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { 
@@ -14,14 +14,19 @@ import {
   Activity, 
   Sparkles, 
   ArrowRight,
-  Loader2
+  Loader2,
+  AlertTriangle
 } from "lucide-react";
+import { auth, db, isFirebaseConfigured } from "@/lib/firebase";
+import { createUserWithEmailAndPassword } from "firebase/auth";
+import { doc, setDoc } from "firebase/firestore";
 
 export default function SignupPage() {
   const router = useRouter();
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [isConfigured, setIsConfigured] = useState(false);
 
   const [formData, setFormData] = useState({
     parentName: "",
@@ -33,15 +38,25 @@ export default function SignupPage() {
     childGender: "male",
   });
 
+  useEffect(() => {
+    setIsConfigured(isFirebaseConfigured());
+  }, []);
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setLoading(true);
+
+    if (!isConfigured) {
+      setError("Firebase is not configured. Please create a .env.local file in your project root with your credentials.");
+      setLoading(false);
+      return;
+    }
 
     const { parentName, email, password, confirmPassword, childName, childDob, childGender } = formData;
 
@@ -65,44 +80,39 @@ export default function SignupPage() {
     }
 
     try {
-      // Retrieve existing users from localStorage
-      const existingUsersRaw = localStorage.getItem("childvision_users");
-      const existingUsers = existingUsersRaw ? JSON.parse(existingUsersRaw) : [];
-
-      // Check if user already exists
-      const userExists = existingUsers.some((user: any) => user.email.toLowerCase() === email.toLowerCase());
-      if (userExists) {
-        setError("An account with this email already exists.");
-        setLoading(false);
-        return;
+      if (!auth || !db) {
+        throw new Error("Firebase SDK was not initialized correctly.");
       }
 
-      // Create new user object
-      const newUser = {
-        id: Date.now().toString(),
+      // 1. Create user with email and password in Firebase Auth
+      const userCredential = await createUserWithEmailAndPassword(auth!, email, password);
+      const firebaseUser = userCredential.user;
+
+      // 2. Save details (parent name, child details) to Firestore collection "users"
+      await setDoc(doc(db!, "users", firebaseUser.uid), {
+        uid: firebaseUser.uid,
         parentName,
         email,
-        password, // stored locally as plaintext for Phase 0 mock authentication
         childName,
         childDob,
         childGender,
         createdAt: new Date().toISOString(),
-      };
+      });
 
-      // Add to array and save
-      existingUsers.push(newUser);
-      localStorage.setItem("childvision_users", JSON.stringify(existingUsers));
-
-      // Set active session
-      localStorage.setItem("childvision_session", JSON.stringify(newUser));
-
-      // Simulate a small network delay for realistic visual feedback
-      setTimeout(() => {
-        setLoading(false);
-        router.push("/dashboard");
-      }, 1000);
-    } catch (err) {
-      setError("An unexpected error occurred. Please try again.");
+      setLoading(false);
+      router.push("/dashboard");
+    } catch (err: any) {
+      console.error("Firebase Registration Error:", err);
+      // Clean up Firebase-specific error codes to be user friendly
+      if (err.code === "auth/email-already-in-use") {
+        setError("An account with this email address already exists.");
+      } else if (err.code === "auth/invalid-email") {
+        setError("Please enter a valid email address.");
+      } else if (err.code === "auth/weak-password") {
+        setError("Password is too weak. Please use a stronger password.");
+      } else {
+        setError(err.message || "An unexpected error occurred during registration.");
+      }
       setLoading(false);
     }
   };
@@ -118,6 +128,17 @@ export default function SignupPage() {
           <h2 className="auth-title">Create your Account</h2>
           <p className="auth-subtitle">Monitor and safeguard your toddler's milestones</p>
         </div>
+
+        {/* Warning if Firebase is not configured */}
+        {!isConfigured && (
+          <div className="alert-banner alert-danger" style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
+            <AlertTriangle size={18} style={{ flexShrink: 0, marginTop: "2px" }} />
+            <div>
+              <strong style={{ display: "block", marginBottom: "0.25rem" }}>Firebase Missing</strong>
+              Please configure environment variables in <code>.env.local</code> to enable real registration. See <code>.env.example</code>.
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="alert-banner alert-danger" id="signup-error-banner">
@@ -139,6 +160,7 @@ export default function SignupPage() {
                 className="form-input input-icon-left"
                 placeholder="John Doe"
                 id="signup-parent-name"
+                disabled={!isConfigured}
                 required
               />
             </div>
@@ -156,6 +178,7 @@ export default function SignupPage() {
                 className="form-input input-icon-left"
                 placeholder="parent@example.com"
                 id="signup-email"
+                disabled={!isConfigured}
                 required
               />
             </div>
@@ -175,6 +198,7 @@ export default function SignupPage() {
                   className="form-input input-icon-left"
                   placeholder="Leo"
                   id="signup-child-name"
+                  disabled={!isConfigured}
                   required
                 />
               </div>
@@ -188,6 +212,7 @@ export default function SignupPage() {
                 onChange={handleChange}
                 className="form-input"
                 id="signup-child-gender"
+                disabled={!isConfigured}
                 style={{ height: "45px", background: "rgba(255, 255, 255, 0.02)" }}
               >
                 <option value="male" style={{ background: "#0f111c" }}>Male</option>
@@ -209,6 +234,7 @@ export default function SignupPage() {
                 className="form-input input-icon-left"
                 id="signup-child-dob"
                 max={new Date().toISOString().split("T")[0]}
+                disabled={!isConfigured}
                 required
               />
             </div>
@@ -227,6 +253,7 @@ export default function SignupPage() {
                 className="form-input input-icon-left input-icon-right"
                 placeholder="••••••••"
                 id="signup-password"
+                disabled={!isConfigured}
                 required
               />
               <span 
@@ -251,6 +278,7 @@ export default function SignupPage() {
                 className="form-input input-icon-left"
                 placeholder="••••••••"
                 id="signup-confirm-password"
+                disabled={!isConfigured}
                 required
               />
             </div>
@@ -260,7 +288,7 @@ export default function SignupPage() {
             type="submit" 
             className="btn btn-primary" 
             style={{ width: "100%", marginTop: "0.5rem" }}
-            disabled={loading}
+            disabled={loading || !isConfigured}
             id="signup-submit-btn"
           >
             {loading ? (
