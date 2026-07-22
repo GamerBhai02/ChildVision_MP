@@ -23,11 +23,26 @@ import {
   Layers,
   Database,
   Camera,
-  Play
+  Play,
+  Trash2,
+  Plus,
+  HelpCircle,
+  Check,
+  AlertCircle,
+  Loader2
 } from "lucide-react";
 import { auth, db } from "@/lib/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
+import { 
+  calculateGrowthMetrics, 
+  saveGrowthRecord, 
+  fetchGrowthRecords, 
+  deleteGrowthRecord, 
+  GrowthRecord 
+} from "@/lib/growth";
+import { getWhoReferenceCurve, CurvePoint } from "@/lib/whoCurves";
+import GrowthChart from "./GrowthChart";
 
 type ModuleTab = "overview" | "physical" | "nutrition" | "behavior" | "safety" | "settings";
 
@@ -51,6 +66,185 @@ export default function DashboardPage() {
     firebaseProjectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "",
     firebaseStorageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || ""
   });
+
+  // Growth Monitoring States
+  const [growthRecords, setGrowthRecords] = useState<GrowthRecord[]>([]);
+  const [loadingRecords, setLoadingRecords] = useState(false);
+  const [submittingRecord, setSubmittingRecord] = useState(false);
+  const [whoReferenceCurves, setWhoReferenceCurves] = useState<{
+    hfa: CurvePoint[];
+    wfa: CurvePoint[];
+    bfa: CurvePoint[];
+  }>({ hfa: [], wfa: [], bfa: [] });
+
+  const [activeChartTab, setActiveChartTab] = useState<"hfa" | "wfa" | "bfa">("hfa");
+  const [accordionOpen, setAccordionOpen] = useState<"height" | "weight" | null>(null);
+
+  const [measurementForm, setMeasurementForm] = useState({
+    date: new Date().toISOString().split("T")[0],
+    height: "",
+    weight: "",
+    headCircumference: "",
+  });
+
+  const handleAddMeasurement = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sessionUser) return;
+    
+    const heightVal = parseFloat(measurementForm.height);
+    const weightVal = parseFloat(measurementForm.weight);
+    const headCircVal = measurementForm.headCircumference ? parseFloat(measurementForm.headCircumference) : undefined;
+    
+    if (isNaN(heightVal) || isNaN(weightVal) || heightVal <= 0 || weightVal <= 0) {
+      showToastMessage("Please enter valid height and weight values.", "info");
+      return;
+    }
+    
+    setSubmittingRecord(true);
+    try {
+      const gender = sessionUser.childGender === "female" ? "female" : "male";
+      const dob = new Date(sessionUser.childDob);
+      const measurementDate = new Date(measurementForm.date);
+      
+      const metrics = await calculateGrowthMetrics(
+        gender,
+        dob,
+        measurementDate,
+        weightVal,
+        heightVal,
+        headCircVal
+      );
+      
+      const newRecord: Omit<GrowthRecord, "id"> = {
+        dateOfMeasurement: measurementDate.toISOString(),
+        ageInDays: metrics.ageInDays,
+        ageInMonths: metrics.ageInMonths,
+        weight: weightVal,
+        height: heightVal,
+        headCircumference: headCircVal,
+        bmi: metrics.bmi,
+        zScores: {
+          wfa: metrics.wfa.zScore,
+          hfa: metrics.hfa.zScore,
+          bfa: metrics.bfa.zScore,
+        },
+        percentiles: {
+          wfa: metrics.wfa.percentile,
+          hfa: metrics.hfa.percentile,
+          bfa: metrics.bfa.percentile,
+        },
+        classifications: {
+          wfa: { label: metrics.wfa.label, severity: metrics.wfa.severity },
+          hfa: { label: metrics.hfa.label, severity: metrics.hfa.severity },
+          bfa: { label: metrics.bfa.label, severity: metrics.bfa.severity },
+        }
+      };
+      
+      const firebaseUser = auth?.currentUser;
+      if (firebaseUser) {
+        await saveGrowthRecord(firebaseUser.uid, newRecord);
+        showToastMessage("Growth measurement saved successfully!", "success");
+        
+        // Refresh records
+        const records = await fetchGrowthRecords(firebaseUser.uid);
+        setGrowthRecords(records);
+        
+        // Reset form
+        setMeasurementForm({
+          date: new Date().toISOString().split("T")[0],
+          height: "",
+          weight: "",
+          headCircumference: "",
+        });
+      }
+    } catch (err) {
+      console.error("Error saving growth record:", err);
+      showToastMessage("Failed to save growth record. Please try again.", "info");
+    } finally {
+      setSubmittingRecord(false);
+    }
+  };
+
+  const handleDeleteRecord = async (recordId: string) => {
+    if (!sessionUser) return;
+    const confirmDelete = window.confirm("Are you sure you want to delete this growth measurement?");
+    if (!confirmDelete) return;
+    
+    try {
+      const firebaseUser = auth?.currentUser;
+      if (firebaseUser) {
+        await deleteGrowthRecord(firebaseUser.uid, recordId);
+        showToastMessage("Growth measurement deleted.", "success");
+        // Refresh records
+        const records = await fetchGrowthRecords(firebaseUser.uid);
+        setGrowthRecords(records);
+      }
+    } catch (err) {
+      console.error("Error deleting growth record:", err);
+      showToastMessage("Failed to delete growth record.", "info");
+    }
+  };
+
+  const toggleAccordion = (section: "height" | "weight") => {
+    setAccordionOpen(accordionOpen === section ? null : section);
+  };
+
+  const getClassificationDisplay = (record: GrowthRecord | null, indicator: "hfa" | "wfa" | "bfa") => {
+    if (!record) return { label: "No logs recorded", color: "var(--text-dim)", bg: "rgba(255,255,255,0.02)" };
+    
+    const info = record.classifications[indicator];
+    let color = "var(--text-main)";
+    let bg = "rgba(255,255,255,0.03)";
+    
+    if (info.severity === "adequate" || info.label.toLowerCase().includes("normal") || info.label.toLowerCase().includes("adequate") || info.label.toLowerCase().includes("eutroph")) {
+      color = "var(--success)";
+      bg = "rgba(16, 185, 129, 0.1)";
+    } else if (info.severity === "low" || info.severity === "high" || info.label.toLowerCase().includes("overweight") || info.label.toLowerCase().includes("tall") || info.label.toLowerCase().includes("underweight") || info.label.toLowerCase().includes("stunted") || info.label.toLowerCase().includes("wasted")) {
+      color = "var(--warning)";
+      bg = "rgba(245, 158, 11, 0.1)";
+    } else if (info.severity === "very-low" || info.severity === "very-high" || info.severity === "risk" || info.label.toLowerCase().includes("severe") || info.label.toLowerCase().includes("obes")) {
+      color = "var(--danger)";
+      bg = "rgba(239, 68, 68, 0.1)";
+    }
+    
+    return { label: info.label, color, bg };
+  };
+
+  // Sort and fetch latest record
+  const sortedRecords = [...growthRecords].sort((a, b) => new Date(b.dateOfMeasurement).getTime() - new Date(a.dateOfMeasurement).getTime());
+  const latestRecord = sortedRecords[0] || null;
+
+  // Calculate Wellness Score
+  let wellnessScore: number | null = null;
+  let wellnessLabel = "Pending first scan";
+  let wellnessColor = "var(--text-dim)";
+
+  if (latestRecord) {
+    let score = 100;
+    // Check WFA
+    if (Math.abs(latestRecord.zScores.wfa) > 2) {
+      score -= 20;
+    }
+    // Check HFA
+    if (Math.abs(latestRecord.zScores.hfa) > 2) {
+      score -= 20;
+    }
+    // Check BFA
+    if (Math.abs(latestRecord.zScores.bfa) > 2) {
+      score -= 20;
+    }
+    wellnessScore = Math.max(10, score);
+    if (wellnessScore >= 85) {
+      wellnessLabel = "Healthy Growth";
+      wellnessColor = "var(--success)";
+    } else if (wellnessScore >= 60) {
+      wellnessLabel = "Monitor Trends";
+      wellnessColor = "var(--warning)";
+    } else {
+      wellnessLabel = "Growth Warning";
+      wellnessColor = "var(--danger)";
+    }
+  }
 
   useEffect(() => {
     if (!auth || !db) {
@@ -84,6 +278,20 @@ export default function DashboardPage() {
             const ageMonths = diffYears * 12 + diffMonths;
             setChildAgeMonths(ageMonths >= 0 ? ageMonths : 0);
           }
+
+          // Fetch Growth Records
+          setLoadingRecords(true);
+          const records = await fetchGrowthRecords(firebaseUser.uid);
+          setGrowthRecords(records);
+          setLoadingRecords(false);
+
+          // Load reference curves
+          const gender = userData.childGender === "female" ? "female" : "male";
+          const hfaCurve = await getWhoReferenceCurve("length-height-for-age", gender);
+          const wfaCurve = await getWhoReferenceCurve("weight-for-age", gender);
+          const bfaCurve = await getWhoReferenceCurve("bmi-for-age", gender);
+          setWhoReferenceCurves({ hfa: hfaCurve, wfa: wfaCurve, bfa: bfaCurve });
+
         } else {
           console.error("No user profile found in Firestore.");
           router.push("/login");
@@ -324,9 +532,12 @@ export default function DashboardPage() {
                         <span>Toddler Height</span>
                         <Ruler size={16} />
                       </div>
-                      <div className="metric-value">-- <span style={{ fontSize: "1rem", color: "var(--text-muted)" }}>cm</span></div>
-                      <div className="metric-trend text-dim">
-                        <Info size={12} /> Pending first scan
+                      <div className="metric-value">
+                        {latestRecord ? latestRecord.height.toFixed(1) : "--"}{" "}
+                        <span style={{ fontSize: "1rem", color: "var(--text-muted)" }}>cm</span>
+                      </div>
+                      <div className="metric-trend text-dim" style={{ color: latestRecord ? "var(--text-muted)" : "var(--text-dim)" }}>
+                        <Info size={12} /> {latestRecord ? `Percentile: ${Math.round(latestRecord.percentiles.hfa)}th (Z: ${latestRecord.zScores.hfa.toFixed(1)})` : "Pending first scan"}
                       </div>
                     </div>
 
@@ -336,9 +547,12 @@ export default function DashboardPage() {
                         <span>Toddler Weight</span>
                         <Scale size={16} />
                       </div>
-                      <div className="metric-value">-- <span style={{ fontSize: "1rem", color: "var(--text-muted)" }}>kg</span></div>
-                      <div className="metric-trend text-dim">
-                        <Info size={12} /> Pending first scan
+                      <div className="metric-value">
+                        {latestRecord ? latestRecord.weight.toFixed(1) : "--"}{" "}
+                        <span style={{ fontSize: "1rem", color: "var(--text-muted)" }}>kg</span>
+                      </div>
+                      <div className="metric-trend text-dim" style={{ color: latestRecord ? "var(--text-muted)" : "var(--text-dim)" }}>
+                        <Info size={12} /> {latestRecord ? `Percentile: ${Math.round(latestRecord.percentiles.wfa)}th (Z: ${latestRecord.zScores.wfa.toFixed(1)})` : "Pending first scan"}
                       </div>
                     </div>
 
@@ -425,17 +639,25 @@ export default function DashboardPage() {
                         </linearGradient>
                       </defs>
                       <path className="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                      <path className="circle-fill" style={{ strokeDasharray: "0, 100" }} d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                      <path 
+                        className="circle-fill" 
+                        style={{ strokeDasharray: latestRecord && wellnessScore ? `${wellnessScore}, 100` : "0, 100" }} 
+                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" 
+                      />
                     </svg>
                     <div className="score-text">
-                      <span>--</span>
-                      <span className="score-label-sub">Pending</span>
+                      <span>{latestRecord && wellnessScore ? wellnessScore : "--"}</span>
+                      <span className="score-label-sub">{latestRecord ? "Calculated" : "Pending"}</span>
                     </div>
                   </div>
 
                   <div className="score-meta">
-                    <span className="score-status-text" style={{ color: "var(--text-dim)" }}>Scans Required</span>
-                    <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>Please upload toddler media in the modules to calculate health scoring.</span>
+                    <span className="score-status-text" style={{ color: wellnessColor }}>{wellnessLabel}</span>
+                    <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                      {latestRecord 
+                        ? `Computed based on height, weight, and BMI Z-score deviations.`
+                        : `Please log growth measurements in the Physical tab to calculate scoring.`}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -444,39 +666,343 @@ export default function DashboardPage() {
 
           {/* TAB 2: MODULE 1 PHYSICAL */}
           {activeTab === "physical" && (
-            <div className="glass-panel" style={{ borderRadius: "18px", padding: "2rem" }} id="view-content-physical">
-              <div className="module-empty-state">
-                <div className="empty-state-icon-box">
-                  <Activity size={36} />
-                </div>
-                <h3 className="empty-state-title">Physical Growth Monitoring</h3>
-                <p className="empty-state-description">
-                  Once active, this module allows parents to upload standing photos/videos of their child. The system extracts body skeleton keypoints (crown to ankle) and maps relative depth through monocular depth estimations to approximate Height, Weight, and Head-to-Body ratios.
-                </p>
-                
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", width: "100%", maxWidth: "450px", textAlign: "left", background: "rgba(255,255,255,0.02)", padding: "1rem", borderRadius: "12px", border: "1px solid var(--border-light)" }}>
-                  <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", fontWeight: "bold", textTransform: "uppercase", letterSpacing: "0.05em" }}>Expected Features:</div>
-                  <div style={{ fontSize: "0.9rem" }}>• Camera-based Height estimation with 30cm reference object calibration</div>
-                  <div style={{ fontSize: "0.9rem" }}>• Body Volume Approximation for Weight calculation</div>
-                  <div style={{ fontSize: "0.9rem" }}>• WHO Growth Chart Comparison (Z-score statistics)</div>
-                  <div style={{ fontSize: "0.9rem" }}>• ResNet-50 Malnutrition (Stunted / Wasted / SAM) CNN classification</div>
-                </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "2rem" }} id="view-content-physical">
+              
+              {/* Dynamic Status Badges (Stunting, Wasting, Underweight Indices) */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "1rem" }}>
+                {/* Height-for-Age (Stunting Index) */}
+                {(() => {
+                  const status = getClassificationDisplay(latestRecord, "hfa");
+                  return (
+                    <div className="metric-panel glass-panel" style={{ borderLeft: `4px solid ${status.color}`, padding: "1.25rem" }}>
+                      <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>Stunting Index (Height-for-Age)</span>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "0.5rem" }}>
+                        <span style={{ fontSize: "1.1rem", fontWeight: "bold", color: status.color }}>{status.label}</span>
+                        {latestRecord ? (
+                          <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>Z: {latestRecord.zScores.hfa.toFixed(2)}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })()}
 
-                <div className="tech-pill-container">
-                  <span className="tech-pill">MediaPipe Pose (33 Landmarks)</span>
-                  <span className="tech-pill">Intel MiDaS Depth</span>
-                  <span className="tech-pill">ResNet-50 Classifier</span>
-                  <span className="tech-pill">WHO Z-score standard tables</span>
-                </div>
+                {/* Weight-for-Age (Underweight Index) */}
+                {(() => {
+                  const status = getClassificationDisplay(latestRecord, "wfa");
+                  return (
+                    <div className="metric-panel glass-panel" style={{ borderLeft: `4px solid ${status.color}`, padding: "1.25rem" }}>
+                      <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>Underweight Index (Weight-for-Age)</span>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "0.5rem" }}>
+                        <span style={{ fontSize: "1.1rem", fontWeight: "bold", color: status.color }}>{status.label}</span>
+                        {latestRecord ? (
+                          <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>Z: {latestRecord.zScores.wfa.toFixed(2)}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })()}
 
-                <button 
-                  className="btn btn-primary"
-                  onClick={() => showToastMessage("Module 1 Camera setup will be implemented in subsequent phases.", "info")}
-                  style={{ marginTop: "1rem" }}
-                >
-                  <Camera size={16} /> Configure Camera Scan
-                </button>
+                {/* BMI-for-Age (Wasting / Weight-for-Height Index) */}
+                {(() => {
+                  const status = getClassificationDisplay(latestRecord, "bfa");
+                  return (
+                    <div className="metric-panel glass-panel" style={{ borderLeft: `4px solid ${status.color}`, padding: "1.25rem" }}>
+                      <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>Wasting Index (BMI-for-Age)</span>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "0.5rem" }}>
+                        <span style={{ fontSize: "1.1rem", fontWeight: "bold", color: status.color }}>{status.label}</span>
+                        {latestRecord ? (
+                          <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>Z: {latestRecord.zScores.bfa.toFixed(2)}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
+
+              {/* Two Column Grid */}
+              <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "2rem" }}>
+                
+                {/* Left Column: Growth Curves & Plotting */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+                  <div className="glass-panel" style={{ borderRadius: "16px", padding: "1.5rem" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem", flexWrap: "wrap", gap: "1rem" }}>
+                      <h3 style={{ fontSize: "1.15rem", fontWeight: "700" }}>WHO Percentile Growth Curves</h3>
+                      
+                      {/* Sub-navigation tabs */}
+                      <div style={{ display: "flex", gap: "0.5rem" }}>
+                        <button 
+                          className={`btn ${activeChartTab === "hfa" ? "btn-primary" : "btn-secondary"}`}
+                          style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem", borderRadius: "8px" }}
+                          onClick={() => setActiveChartTab("hfa")}
+                        >
+                          Height-for-Age
+                        </button>
+                        <button 
+                          className={`btn ${activeChartTab === "wfa" ? "btn-primary" : "btn-secondary"}`}
+                          style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem", borderRadius: "8px" }}
+                          onClick={() => setActiveChartTab("wfa")}
+                        >
+                          Weight-for-Age
+                        </button>
+                        <button 
+                          className={`btn ${activeChartTab === "bfa" ? "btn-primary" : "btn-secondary"}`}
+                          style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem", borderRadius: "8px" }}
+                          onClick={() => setActiveChartTab("bfa")}
+                        >
+                          BMI-for-Age
+                        </button>
+                      </div>
+                    </div>
+
+                    {whoReferenceCurves[activeChartTab] && whoReferenceCurves[activeChartTab].length > 0 ? (
+                      <GrowthChart 
+                        records={growthRecords}
+                        curve={whoReferenceCurves[activeChartTab]}
+                        indicator={activeChartTab}
+                        sex={sessionUser.childGender === "female" ? "female" : "male"}
+                      />
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "300px", color: "var(--text-muted)" }}>
+                        <Loader2 className="animate-spin" size={24} style={{ marginRight: "0.5rem" }} />
+                        Loading WHO reference charts...
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Right Column: Log Input Form & Guidelines */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+                  
+                  {/* Input Form Card */}
+                  <div className="glass-panel" style={{ borderRadius: "16px", padding: "1.5rem" }} id="growth-log-form">
+                    <h3 style={{ fontSize: "1.15rem", fontWeight: "700", marginBottom: "0.25rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <Calendar size={18} style={{ color: "var(--primary)" }} />
+                      Log Measurement
+                    </h3>
+                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "1rem" }}>
+                      Record your toddler's height and weight.
+                    </p>
+
+                    <form onSubmit={handleAddMeasurement} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                      <div className="form-group">
+                        <label className="form-label">Measurement Date</label>
+                        <input 
+                          type="date" 
+                          className="form-input" 
+                          value={measurementForm.date}
+                          onChange={(e) => setMeasurementForm({...measurementForm, date: e.target.value})}
+                          max={new Date().toISOString().split("T")[0]}
+                          required
+                        />
+                      </div>
+                      
+                      <div className="form-group">
+                        <label className="form-label">Height / Length (cm)</label>
+                        <input 
+                          type="number" 
+                          step="0.1" 
+                          min="30"
+                          max="150"
+                          className="form-input" 
+                          placeholder="e.g. 75.4"
+                          value={measurementForm.height}
+                          onChange={(e) => setMeasurementForm({...measurementForm, height: e.target.value})}
+                          required
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Weight (kg)</label>
+                        <input 
+                          type="number" 
+                          step="0.1" 
+                          min="1"
+                          max="50"
+                          className="form-input" 
+                          placeholder="e.g. 9.8"
+                          value={measurementForm.weight}
+                          onChange={(e) => setMeasurementForm({...measurementForm, weight: e.target.value})}
+                          required
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Head Circumference (cm, optional)</label>
+                        <input 
+                          type="number" 
+                          step="0.1" 
+                          min="20"
+                          max="70"
+                          className="form-input" 
+                          placeholder="e.g. 45.2"
+                          value={measurementForm.headCircumference}
+                          onChange={(e) => setMeasurementForm({...measurementForm, headCircumference: e.target.value})}
+                        />
+                      </div>
+
+                      <button 
+                        type="submit" 
+                        className="btn btn-primary" 
+                        style={{ width: "100%", marginTop: "0.5rem" }}
+                        disabled={submittingRecord}
+                      >
+                        {submittingRecord ? (
+                          <>
+                            <Loader2 className="animate-spin" size={16} /> Saving Record...
+                          </>
+                        ) : (
+                          <>
+                            <Plus size={16} /> Save Growth Log
+                          </>
+                        )}
+                      </button>
+                    </form>
+                  </div>
+
+                  {/* CDC Guidelines Accordion */}
+                  <div className="glass-panel" style={{ borderRadius: "16px", padding: "1.5rem" }}>
+                    <h3 style={{ fontSize: "1.1rem", fontWeight: "700", marginBottom: "0.75rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <HelpCircle size={16} style={{ color: "var(--secondary)" }} />
+                      How to Measure Accurately
+                    </h3>
+                    <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginBottom: "1rem" }}>
+                      Following CDC standards ensures precise Z-score calculations.
+                    </p>
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                      {/* Height Section */}
+                      <div>
+                        <button 
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ width: "100%", justifyContent: "space-between", padding: "0.5rem 0.75rem", fontSize: "0.85rem", borderRadius: "8px" }}
+                          onClick={() => toggleAccordion("height")}
+                        >
+                          <span>Measuring Height / Length</span>
+                          <ChevronDown size={14} style={{ transform: accordionOpen === "height" ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+                        </button>
+                        {accordionOpen === "height" && (
+                          <div style={{ padding: "0.75rem", background: "rgba(255,255,255,0.01)", border: "1px solid var(--border-light)", borderTop: "none", borderBottomLeftRadius: "8px", borderBottomRightRadius: "8px", fontSize: "0.8rem", color: "var(--text-muted)", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                            <div>• Remove the child's shoes, heavy clothing, and hair accessories.</div>
+                            <div>• Stand the child flat on a hard floor against a flat wall.</div>
+                            <div>• Ensure feet are flat, heels touching the wall, shoulders level.</div>
+                            <div>• Child looks straight ahead (line of sight parallel to floor).</div>
+                            <div>• Place a flat tool (like a book) level on the child's head, mark the wall, and measure with a tape.</div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Weight Section */}
+                      <div>
+                        <button 
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ width: "100%", justifyContent: "space-between", padding: "0.5rem 0.75rem", fontSize: "0.85rem", borderRadius: "8px" }}
+                          onClick={() => toggleAccordion("weight")}
+                        >
+                          <span>Measuring Weight</span>
+                          <ChevronDown size={14} style={{ transform: accordionOpen === "weight" ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+                        </button>
+                        {accordionOpen === "weight" && (
+                          <div style={{ padding: "0.75rem", background: "rgba(255,255,255,0.01)", border: "1px solid var(--border-light)", borderTop: "none", borderBottomLeftRadius: "8px", borderBottomRightRadius: "8px", fontSize: "0.8rem", color: "var(--text-muted)", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                            <div>• Use a digital scale placed on a flat, hard floor (not carpet).</div>
+                            <div>• Remove the child's shoes and heavy outer clothing.</div>
+                            <div>• Have the child stand still in the center of the scale platform.</div>
+                            <div>• Record the weight to the nearest decimal (0.1 kg).</div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+
+              {/* Longitudinal History Table */}
+              <div className="glass-panel" style={{ borderRadius: "16px", padding: "1.5rem" }}>
+                <h3 style={{ fontSize: "1.15rem", fontWeight: "700", marginBottom: "1rem" }}>Growth Measurement Log</h3>
+                
+                {loadingRecords ? (
+                  <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted)" }}>
+                    <Loader2 className="animate-spin" style={{ margin: "0 auto 0.5rem" }} /> Loading records...
+                  </div>
+                ) : growthRecords.length === 0 ? (
+                  <div style={{ padding: "3rem 1rem", textAlign: "center", color: "var(--text-muted)", fontSize: "0.9rem" }}>
+                    No growth records logged yet. Enter your child's first measurement above to start tracking.
+                  </div>
+                ) : (
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
+                      <thead>
+                        <tr style={{ borderBottom: "1px solid var(--border-light)", color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase" }}>
+                          <th style={{ padding: "0.75rem 1rem" }}>Date</th>
+                          <th style={{ padding: "0.75rem 1rem" }}>Age</th>
+                          <th style={{ padding: "0.75rem 1rem" }}>Height (cm)</th>
+                          <th style={{ padding: "0.75rem 1rem" }}>Weight (kg)</th>
+                          <th style={{ padding: "0.75rem 1rem" }}>BMI</th>
+                          <th style={{ padding: "0.75rem 1rem" }}>Status Details</th>
+                          <th style={{ padding: "0.75rem 1rem" }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...growthRecords]
+                          .sort((a, b) => new Date(b.dateOfMeasurement).getTime() - new Date(a.dateOfMeasurement).getTime())
+                          .map((rec) => {
+                            const dateStr = new Date(rec.dateOfMeasurement).toLocaleDateString(undefined, {
+                              year: "numeric",
+                              month: "short",
+                              day: "numeric",
+                            });
+                            return (
+                              <tr key={rec.id} style={{ borderBottom: "1px solid var(--border-light)", transition: "background 0.2s" }} className="table-row-hover">
+                                <td style={{ padding: "0.75rem 1rem", fontWeight: "600" }}>{dateStr}</td>
+                                <td style={{ padding: "0.75rem 1rem" }}>{rec.ageInMonths} months</td>
+                                <td style={{ padding: "0.75rem 1rem" }}>
+                                  {rec.height.toFixed(1)} cm
+                                  <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", display: "block" }}>
+                                    P: {Math.round(rec.percentiles.hfa)}th (Z: {rec.zScores.hfa.toFixed(1)})
+                                  </span>
+                                </td>
+                                <td style={{ padding: "0.75rem 1rem" }}>
+                                  {rec.weight.toFixed(1)} kg
+                                  <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", display: "block" }}>
+                                    P: {Math.round(rec.percentiles.wfa)}th (Z: {rec.zScores.wfa.toFixed(1)})
+                                  </span>
+                                </td>
+                                <td style={{ padding: "0.75rem 1rem" }}>
+                                  {rec.bmi.toFixed(1)}
+                                  <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", display: "block" }}>
+                                    P: {Math.round(rec.percentiles.bfa)}th (Z: {rec.zScores.bfa.toFixed(1)})
+                                  </span>
+                                </td>
+                                <td style={{ padding: "0.75rem 1rem" }}>
+                                  <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap" }}>
+                                    <span className="module-badge" style={{ fontSize: "0.7rem", padding: "0.15rem 0.4rem", background: getClassificationDisplay(rec, "hfa").bg, color: getClassificationDisplay(rec, "hfa").color }}>
+                                      {rec.classifications.hfa.label}
+                                    </span>
+                                    <span className="module-badge" style={{ fontSize: "0.7rem", padding: "0.15rem 0.4rem", background: getClassificationDisplay(rec, "wfa").bg, color: getClassificationDisplay(rec, "wfa").color }}>
+                                      {rec.classifications.wfa.label}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td style={{ padding: "0.75rem 1rem" }}>
+                                  <button
+                                    onClick={() => rec.id && handleDeleteRecord(rec.id)}
+                                    className="btn btn-secondary"
+                                    style={{ padding: "0.3rem 0.5rem", borderRadius: "6px", color: "var(--danger)", border: "1px solid rgba(239, 68, 68, 0.15)", background: "rgba(239, 68, 68, 0.02)" }}
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
             </div>
           )}
 
