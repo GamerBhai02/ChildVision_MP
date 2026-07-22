@@ -6,7 +6,7 @@ import { GrowthRecord } from "@/lib/growth";
 interface GrowthChartProps {
   records: GrowthRecord[];
   curve: CurvePoint[];
-  indicator: "hfa" | "wfa" | "bfa";
+  indicator: "hfa" | "wfa" | "bfa" | "hcfa";
   sex: "male" | "female";
 }
 
@@ -38,6 +38,11 @@ export default function GrowthChart({ records, curve, indicator, sex }: GrowthCh
     maxY = 28;
     yLabel = "Weight (kg)";
     getVal = (r) => r.weight;
+  } else if (indicator === "hcfa") {
+    minY = 30;
+    maxY = 55;
+    yLabel = "Head Circumference (cm)";
+    getVal = (r) => r.headCircumference ?? 0;
   } else {
     minY = 10;
     maxY = 23;
@@ -85,11 +90,11 @@ export default function GrowthChart({ records, curve, indicator, sex }: GrowthCh
 
   // Generate SVG Path for Child's Growth Line
   const getChildPath = () => {
-    if (records.length === 0) return "";
-    // Filter records within 60 months and sort them
     const validRecords = records
-      .filter((r) => r.ageInMonths <= 60)
+      .filter((r) => r.ageInMonths <= 60 && getVal(r) > 0)
       .sort((a, b) => a.ageInMonths - b.ageInMonths);
+
+    if (validRecords.length === 0) return "";
 
     return validRecords
       .map((r, idx) => {
@@ -210,7 +215,7 @@ export default function GrowthChart({ records, curve, indicator, sex }: GrowthCh
         )}
 
         {/* Child's Growth Line */}
-        {records.length > 0 && (
+        {records.length > 0 && getChildPath() !== "" && (
           <path 
             d={getChildPath()} 
             fill="none" 
@@ -224,7 +229,7 @@ export default function GrowthChart({ records, curve, indicator, sex }: GrowthCh
 
         {/* Child's Growth Markers (Data Points) */}
         {records
-          .filter((r) => r.ageInMonths <= 60)
+          .filter((r) => r.ageInMonths <= 60 && getVal(r) > 0)
           .map((r, idx) => {
             const cx = getXPixel(r.ageInMonths);
             const cy = getYPixel(getVal(r));

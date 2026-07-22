@@ -22,7 +22,7 @@ export const getLmsValue = (L: number, M: number, S: number, Z: number): number 
 
 // Generates the reference WHO curve points from month 0 to 60
 export const getWhoReferenceCurve = async (
-  indicator: "weight-for-age" | "length-height-for-age" | "bmi-for-age",
+  indicator: "weight-for-age" | "length-height-for-age" | "bmi-for-age" | "head-circumference-for-age",
   sex: "male" | "female"
 ): Promise<CurvePoint[]> => {
   try {
@@ -34,6 +34,8 @@ export const getWhoReferenceCurve = async (
       tableName = isBoys ? "wfa-boys-0-5" : "wfa-girls-0-5";
     } else if (indicator === "length-height-for-age") {
       tableName = isBoys ? "lhfa-boys-0-5" : "lhfa-girls-0-5";
+    } else if (indicator === "head-circumference-for-age") {
+      tableName = isBoys ? "hcfa-boys-0-5" : "hcfa-girls-0-5";
     } else {
       tableName = isBoys ? "bfa-boys-0-5" : "bfa-girls-0-5";
     }
@@ -80,7 +82,7 @@ export const getWhoReferenceCurve = async (
 
 // Generates smooth fallback curves based on standard pediatric averages if dynamic load fails
 export const getFallbackReferenceCurve = (
-  indicator: "weight-for-age" | "length-height-for-age" | "bmi-for-age",
+  indicator: "weight-for-age" | "length-height-for-age" | "bmi-for-age" | "head-circumference-for-age",
   sex: "male" | "female"
 ): CurvePoint[] => {
   const curvePoints: CurvePoint[] = [];
@@ -103,6 +105,12 @@ export const getFallbackReferenceCurve = (
       if (!isMale) median -= 0.4;
       s = 0.12; // weight has higher variation
       l = 0.5;  // slightly skewed
+    } else if (indicator === "head-circumference-for-age") {
+      // Average birth HC ~34.5cm, 1yr ~46cm, 2yr ~48cm, 5yr ~51cm
+      median = 34.5 + 13.5 * Math.pow(month / 12, 0.45);
+      if (!isMale) median -= 0.6; // girls have slightly smaller head size
+      s = 0.03; // head size has low variation
+      l = 1;
     } else {
       // BMI starts at ~13 at birth, rises to ~17 at 12m, then decreases to ~15.5 at 60m
       const t = month / 12;

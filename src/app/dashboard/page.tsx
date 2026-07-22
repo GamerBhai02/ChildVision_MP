@@ -39,6 +39,7 @@ import {
   saveGrowthRecord, 
   fetchGrowthRecords, 
   deleteGrowthRecord, 
+  updateRecordAiAnalysis,
   GrowthRecord 
 } from "@/lib/growth";
 import { getWhoReferenceCurve, CurvePoint } from "@/lib/whoCurves";
@@ -71,13 +72,15 @@ export default function DashboardPage() {
   const [growthRecords, setGrowthRecords] = useState<GrowthRecord[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [submittingRecord, setSubmittingRecord] = useState(false);
+  const [generatingAi, setGeneratingAi] = useState(false);
   const [whoReferenceCurves, setWhoReferenceCurves] = useState<{
     hfa: CurvePoint[];
     wfa: CurvePoint[];
     bfa: CurvePoint[];
-  }>({ hfa: [], wfa: [], bfa: [] });
+    hcfa: CurvePoint[];
+  }>({ hfa: [], wfa: [], bfa: [], hcfa: [] });
 
-  const [activeChartTab, setActiveChartTab] = useState<"hfa" | "wfa" | "bfa">("hfa");
+  const [activeChartTab, setActiveChartTab] = useState<"hfa" | "wfa" | "bfa" | "hcfa">("hfa");
   const [accordionOpen, setAccordionOpen] = useState<"height" | "weight" | null>(null);
 
   const [measurementForm, setMeasurementForm] = useState({
@@ -87,6 +90,48 @@ export default function DashboardPage() {
     headCircumference: "",
   });
 
+  const handleRequestAiAnalysis = async (recordId: string) => {
+    if (!sessionUser || !recordId) return;
+    setGeneratingAi(true);
+    try {
+      const res = await fetch("/api/analyze-growth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: sessionUser.childName,
+          sex: sessionUser.childGender === "female" ? "female" : "male",
+          ageMonths: childAgeMonths,
+          records: growthRecords
+        })
+      });
+      
+      if (!res.ok) throw new Error("AI analysis failed");
+      const analysisData = await res.json();
+      
+      const firebaseUser = auth?.currentUser;
+      if (firebaseUser) {
+        await updateRecordAiAnalysis(firebaseUser.uid, recordId, {
+          summary: analysisData.summary,
+          status: analysisData.status,
+          recommendations: analysisData.recommendations,
+          timestamp: analysisData.timestamp,
+          model: analysisData.model
+        });
+        
+        showToastMessage("Gemini AI Pediatric assessment completed!", "success");
+        
+        // Refresh records
+        const records = await fetchGrowthRecords(firebaseUser.uid);
+        setGrowthRecords(records);
+      }
+    } catch (err) {
+      console.error("AI assessment failed:", err);
+      showToastMessage("Failed to retrieve AI growth assessment.", "info");
+    } finally {
+      setGeneratingAi(false);
+    }
+  };
+
   const handleAddMeasurement = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!sessionUser) return;
@@ -95,8 +140,8 @@ export default function DashboardPage() {
     const weightVal = parseFloat(measurementForm.weight);
     const headCircVal = measurementForm.headCircumference ? parseFloat(measurementForm.headCircumference) : undefined;
     
-    if (isNaN(heightVal) || isNaN(weightVal) || heightVal <= 0 || weightVal <= 0) {
-      showToastMessage("Please enter valid height and weight values.", "info");
+    if (isNaN(heightVal) || isNaN(weightVal) || heightVal <= 0 || weightVal <= 0 || (headCircVal !== undefined && (isNaN(headCircVal) || headCircVal <= 0))) {
+      showToastMessage("Please enter valid height, weight, and head circumference values.", "info");
       return;
     }
     
@@ -122,21 +167,28 @@ export default function DashboardPage() {
         weight: weightVal,
         height: heightVal,
         headCircumference: headCircVal,
+        headToHeightRatio: metrics.headToHeightRatio,
         bmi: metrics.bmi,
         zScores: {
           wfa: metrics.wfa.zScore,
           hfa: metrics.hfa.zScore,
           bfa: metrics.bfa.zScore,
+          hcfa: metrics.hcfa?.zScore,
+          wfl: metrics.wfl?.zScore,
         },
         percentiles: {
           wfa: metrics.wfa.percentile,
           hfa: metrics.hfa.percentile,
           bfa: metrics.bfa.percentile,
+          hcfa: metrics.hcfa?.percentile,
+          wfl: metrics.wfl?.percentile,
         },
         classifications: {
           wfa: { label: metrics.wfa.label, severity: metrics.wfa.severity },
           hfa: { label: metrics.hfa.label, severity: metrics.hfa.severity },
           bfa: { label: metrics.bfa.label, severity: metrics.bfa.severity },
+          hcfa: metrics.hcfa ? { label: metrics.hcfa.label, severity: metrics.hcfa.severity } : undefined,
+          wfl: metrics.wfl ? { label: metrics.wfl.label, severity: metrics.wfl.severity } : undefined,
         }
       };
       
@@ -189,10 +241,12 @@ export default function DashboardPage() {
     setAccordionOpen(accordionOpen === section ? null : section);
   };
 
-  const getClassificationDisplay = (record: GrowthRecord | null, indicator: "hfa" | "wfa" | "bfa") => {
+  const getClassificationDisplay = (record: GrowthRecord | null, indicator: "hfa" | "wfa" | "bfa" | "hcfa" | "wfl") => {
     if (!record) return { label: "No logs recorded", color: "var(--text-dim)", bg: "rgba(255,255,255,0.02)" };
     
     const info = record.classifications[indicator];
+    if (!info) return { label: "Not applicable", color: "var(--text-muted)", bg: "rgba(255,255,255,0.01)" };
+    
     let color = "var(--text-main)";
     let bg = "rgba(255,255,255,0.03)";
     
@@ -290,7 +344,8 @@ export default function DashboardPage() {
           const hfaCurve = await getWhoReferenceCurve("length-height-for-age", gender);
           const wfaCurve = await getWhoReferenceCurve("weight-for-age", gender);
           const bfaCurve = await getWhoReferenceCurve("bmi-for-age", gender);
-          setWhoReferenceCurves({ hfa: hfaCurve, wfa: wfaCurve, bfa: bfaCurve });
+          const hcfaCurve = await getWhoReferenceCurve("head-circumference-for-age", gender);
+          setWhoReferenceCurves({ hfa: hfaCurve, wfa: wfaCurve, bfa: bfaCurve, hcfa: hcfaCurve });
 
         } else {
           console.error("No user profile found in Firestore.");
@@ -719,6 +774,74 @@ export default function DashboardPage() {
                 })()}
               </div>
 
+              {/* WHO Body Proportions & Symmetry Panel */}
+              <div className="glass-panel" style={{ borderRadius: "16px", padding: "1.5rem" }}>
+                <h3 style={{ fontSize: "1.15rem", fontWeight: "700", marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <Sparkles size={18} style={{ color: "var(--secondary)" }} />
+                  WHO Body Proportions & Symmetry Analysis
+                </h3>
+                <p style={{ fontSize: "0.82rem", color: "var(--text-muted)", marginBottom: "1.25rem" }}>
+                  Cross-referencing weight, height, and head circumference ratios against pediatric standards.
+                </p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1.25rem" }}>
+                  
+                  {/* Head-to-Height Ratio */}
+                  <div style={{ background: "rgba(255,255,255,0.02)", padding: "1rem", borderRadius: "10px", border: "1px solid var(--border-light)" }}>
+                    <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", fontWeight: "500" }}>Head-to-Height Ratio</span>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: "0.5rem", marginTop: "0.35rem" }}>
+                      <span style={{ fontSize: "1.4rem", fontWeight: "bold", color: "var(--text-main)" }}>
+                        {latestRecord?.headToHeightRatio ? `${(latestRecord.headToHeightRatio * 100).toFixed(1)}%` : "--"}
+                      </span>
+                      {latestRecord?.headToHeightRatio && (
+                        <span style={{ fontSize: "0.8rem", color: "var(--success)" }}>
+                          (Standard range: 50% - 60%)
+                        </span>
+                      )}
+                    </div>
+                    <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.5rem" }}>
+                      Monitors head proportions relative to linear skeletal length. Normal developmental growth ranges between 50% to 60% in toddlers.
+                    </p>
+                  </div>
+
+                  {/* Weight-for-Height/Length */}
+                  <div style={{ background: "rgba(255,255,255,0.02)", padding: "1rem", borderRadius: "10px", border: "1px solid var(--border-light)" }}>
+                    <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", fontWeight: "500" }}>Weight-for-Height/Length (WHO Proportion)</span>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: "0.5rem", marginTop: "0.35rem" }}>
+                      <span style={{ fontSize: "1.2rem", fontWeight: "bold", color: getClassificationDisplay(latestRecord, "wfl").color }}>
+                        {latestRecord?.zScores.wfl !== undefined ? getClassificationDisplay(latestRecord, "wfl").label : "Not calculated"}
+                      </span>
+                      {latestRecord?.zScores.wfl !== undefined && (
+                        <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                          Z: {latestRecord.zScores.wfl.toFixed(2)} ({latestRecord.ageInMonths < 24 ? "WFL" : "WFH"})
+                        </span>
+                      )}
+                    </div>
+                    <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.5rem" }}>
+                      Evaluates weight relative to child height/length to spot acute malnutrition (wasting) or obesity, independent of specific age.
+                    </p>
+                  </div>
+
+                  {/* Head Circumference-for-Age */}
+                  <div style={{ background: "rgba(255,255,255,0.02)", padding: "1rem", borderRadius: "10px", border: "1px solid var(--border-light)" }}>
+                    <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", fontWeight: "500" }}>Head Circumference Z-Score</span>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: "0.5rem", marginTop: "0.35rem" }}>
+                      <span style={{ fontSize: "1.2rem", fontWeight: "bold", color: getClassificationDisplay(latestRecord, "hcfa").color }}>
+                        {latestRecord?.zScores.hcfa !== undefined ? getClassificationDisplay(latestRecord, "hcfa").label : "Not logged"}
+                      </span>
+                      {latestRecord?.zScores.hcfa !== undefined && (
+                        <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                          Z: {latestRecord.zScores.hcfa.toFixed(2)} (P: {Math.round(latestRecord.percentiles.hcfa ?? 0)}th)
+                        </span>
+                      )}
+                    </div>
+                    <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.5rem" }}>
+                      Measures brain and cranial skeletal development. Values outside -2 to +2 SD suggest macrocephaly or microcephaly.
+                    </p>
+                  </div>
+
+                </div>
+              </div>
+
               {/* Two Column Grid */}
               <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "2rem" }}>
                 
@@ -729,27 +852,34 @@ export default function DashboardPage() {
                       <h3 style={{ fontSize: "1.15rem", fontWeight: "700" }}>WHO Percentile Growth Curves</h3>
                       
                       {/* Sub-navigation tabs */}
-                      <div style={{ display: "flex", gap: "0.5rem" }}>
+                      <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap" }}>
                         <button 
                           className={`btn ${activeChartTab === "hfa" ? "btn-primary" : "btn-secondary"}`}
-                          style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem", borderRadius: "8px" }}
+                          style={{ padding: "0.4rem 0.65rem", fontSize: "0.75rem", borderRadius: "8px" }}
                           onClick={() => setActiveChartTab("hfa")}
                         >
                           Height-for-Age
                         </button>
                         <button 
                           className={`btn ${activeChartTab === "wfa" ? "btn-primary" : "btn-secondary"}`}
-                          style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem", borderRadius: "8px" }}
+                          style={{ padding: "0.4rem 0.65rem", fontSize: "0.75rem", borderRadius: "8px" }}
                           onClick={() => setActiveChartTab("wfa")}
                         >
                           Weight-for-Age
                         </button>
                         <button 
                           className={`btn ${activeChartTab === "bfa" ? "btn-primary" : "btn-secondary"}`}
-                          style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem", borderRadius: "8px" }}
+                          style={{ padding: "0.4rem 0.65rem", fontSize: "0.75rem", borderRadius: "8px" }}
                           onClick={() => setActiveChartTab("bfa")}
                         >
                           BMI-for-Age
+                        </button>
+                        <button 
+                          className={`btn ${activeChartTab === "hcfa" ? "btn-primary" : "btn-secondary"}`}
+                          style={{ padding: "0.4rem 0.65rem", fontSize: "0.75rem", borderRadius: "8px" }}
+                          onClick={() => setActiveChartTab("hcfa")}
+                        >
+                          Head Circumference
                         </button>
                       </div>
                     </div>
@@ -780,7 +910,7 @@ export default function DashboardPage() {
                       Log Measurement
                     </h3>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "1rem" }}>
-                      Record your toddler's height and weight.
+                      Record your toddler's height, weight, and head circumference.
                     </p>
 
                     <form onSubmit={handleAddMeasurement} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
@@ -827,7 +957,7 @@ export default function DashboardPage() {
                       </div>
 
                       <div className="form-group">
-                        <label className="form-label">Head Circumference (cm, optional)</label>
+                        <label className="form-label">Head Circumference (cm)</label>
                         <input 
                           type="number" 
                           step="0.1" 
@@ -837,6 +967,7 @@ export default function DashboardPage() {
                           placeholder="e.g. 45.2"
                           value={measurementForm.headCircumference}
                           onChange={(e) => setMeasurementForm({...measurementForm, headCircumference: e.target.value})}
+                          required
                         />
                       </div>
 
@@ -918,6 +1049,96 @@ export default function DashboardPage() {
                 </div>
               </div>
 
+              {/* Gemini AI Pediatric Growth Coach Section */}
+              <div className="glass-panel" style={{ borderRadius: "16px", padding: "1.50rem", background: "linear-gradient(135deg, rgba(139, 92, 246, 0.05) 0%, rgba(192, 132, 252, 0.02) 100%)", border: "1px solid rgba(139, 92, 246, 0.15)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "1rem", marginBottom: "1rem" }}>
+                  <div>
+                    <h3 style={{ fontSize: "1.2rem", fontWeight: "700", display: "flex", alignItems: "center", gap: "0.5rem", color: "#c084fc" }}>
+                      <Sparkles size={18} />
+                      Gemini AI Pediatric Growth Coach
+                    </h3>
+                    <p style={{ fontSize: "0.82rem", color: "var(--text-muted)", marginTop: "0.2rem" }}>
+                      Generates clinical assessments and actionable guides based on longitudinal tracking patterns.
+                    </p>
+                  </div>
+                  {latestRecord && (
+                    <button
+                      className="btn btn-primary"
+                      style={{ padding: "0.5rem 1rem", fontSize: "0.8rem", background: "var(--primary)" }}
+                      onClick={() => latestRecord.id && handleRequestAiAnalysis(latestRecord.id)}
+                      disabled={generatingAi}
+                    >
+                      {generatingAi ? (
+                        <>
+                          <Loader2 className="animate-spin" size={14} style={{ marginRight: "0.5rem" }} />
+                          Consulting Gemini AI...
+                        </>
+                      ) : latestRecord.aiAnalysis ? (
+                        "Request Fresh AI Review"
+                      ) : (
+                        "Generate AI Growth Review"
+                      )}
+                    </button>
+                  )}
+                </div>
+
+                {latestRecord?.aiAnalysis ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                    
+                    {/* Summary box */}
+                    <div style={{ background: "rgba(255,255,255,0.015)", padding: "1rem", borderRadius: "10px", border: "1px solid var(--border-light)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.5rem" }}>
+                        <span style={{ fontSize: "0.75rem", textTransform: "uppercase", color: "var(--text-muted)", fontWeight: "bold" }}>Clinical Conclusion</span>
+                        <span 
+                          className="module-badge" 
+                          style={{ 
+                            fontSize: "0.7rem", 
+                            padding: "0.15rem 0.5rem", 
+                            background: latestRecord.aiAnalysis.status === "Healthy Growth" ? "rgba(16, 185, 129, 0.15)" : latestRecord.aiAnalysis.status === "Monitor Trends" ? "rgba(245, 158, 11, 0.15)" : "rgba(239, 68, 68, 0.15)",
+                            color: latestRecord.aiAnalysis.status === "Healthy Growth" ? "var(--success)" : latestRecord.aiAnalysis.status === "Monitor Trends" ? "var(--warning)" : "var(--danger)"
+                          }}
+                        >
+                          {latestRecord.aiAnalysis.status}
+                        </span>
+                      </div>
+                      <p style={{ fontSize: "0.9rem", color: "var(--text-main)", lineHeight: "1.4" }}>
+                        {latestRecord.aiAnalysis.summary}
+                      </p>
+                    </div>
+
+                    {/* Recommendations grid */}
+                    <div>
+                      <span style={{ fontSize: "0.75rem", textTransform: "uppercase", color: "var(--text-muted)", fontWeight: "bold", display: "block", marginBottom: "0.5rem" }}>
+                        Pediatric Care Guidelines
+                      </span>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "0.75rem" }}>
+                        {latestRecord.aiAnalysis.recommendations.map((rec, i) => (
+                          <div key={i} style={{ display: "flex", gap: "0.5rem", background: "rgba(255,255,255,0.01)", padding: "0.75rem", borderRadius: "8px", border: "1px solid var(--border-light)" }}>
+                            <Check size={14} style={{ color: "#c084fc", flexShrink: 0, marginTop: "2px" }} />
+                            <span style={{ fontSize: "0.8rem", color: "var(--text-dim)", lineHeight: "1.3" }}>{rec}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Meta info */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.75rem", color: "var(--text-muted)", borderTop: "1px solid var(--border-light)", paddingTop: "0.75rem", marginTop: "0.25rem" }}>
+                      <span>Model: <strong>{latestRecord.aiAnalysis.model}</strong></span>
+                      <span>Analyzed on: {new Date(latestRecord.aiAnalysis.timestamp).toLocaleString()}</span>
+                    </div>
+
+                  </div>
+                ) : !latestRecord ? (
+                  <div style={{ textAlign: "center", padding: "2rem 1rem", color: "var(--text-muted)", fontSize: "0.9rem" }}>
+                    Please add your first child measurement log above to activate the AI Pediatric Growth Coach.
+                  </div>
+                ) : (
+                  <div style={{ textAlign: "center", padding: "2rem 1rem", color: "var(--text-muted)", fontSize: "0.9rem" }}>
+                    No assessment saved for the latest measurements yet. Click the <strong>Generate AI Growth Review</strong> button to run the Gemini analysis.
+                  </div>
+                )}
+              </div>
+
               {/* Longitudinal History Table */}
               <div className="glass-panel" style={{ borderRadius: "16px", padding: "1.5rem" }}>
                 <h3 style={{ fontSize: "1.15rem", fontWeight: "700", marginBottom: "1rem" }}>Growth Measurement Log</h3>
@@ -940,7 +1161,9 @@ export default function DashboardPage() {
                           <th style={{ padding: "0.75rem 1rem" }}>Height (cm)</th>
                           <th style={{ padding: "0.75rem 1rem" }}>Weight (kg)</th>
                           <th style={{ padding: "0.75rem 1rem" }}>BMI</th>
-                          <th style={{ padding: "0.75rem 1rem" }}>Status Details</th>
+                          <th style={{ padding: "0.75rem 1rem" }}>Head Circ.</th>
+                          <th style={{ padding: "0.75rem 1rem" }}>Head/Height</th>
+                          <th style={{ padding: "0.75rem 1rem" }}>Wasting Index</th>
                           <th style={{ padding: "0.75rem 1rem" }}>Action</th>
                         </tr>
                       </thead>
@@ -976,14 +1199,35 @@ export default function DashboardPage() {
                                   </span>
                                 </td>
                                 <td style={{ padding: "0.75rem 1rem" }}>
-                                  <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap" }}>
-                                    <span className="module-badge" style={{ fontSize: "0.7rem", padding: "0.15rem 0.4rem", background: getClassificationDisplay(rec, "hfa").bg, color: getClassificationDisplay(rec, "hfa").color }}>
-                                      {rec.classifications.hfa.label}
-                                    </span>
-                                    <span className="module-badge" style={{ fontSize: "0.7rem", padding: "0.15rem 0.4rem", background: getClassificationDisplay(rec, "wfa").bg, color: getClassificationDisplay(rec, "wfa").color }}>
-                                      {rec.classifications.wfa.label}
-                                    </span>
-                                  </div>
+                                  {rec.headCircumference ? (
+                                    <>
+                                      {rec.headCircumference.toFixed(1)} cm
+                                      {rec.percentiles.hcfa !== undefined && rec.zScores.hcfa !== undefined && (
+                                        <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", display: "block" }}>
+                                          P: {Math.round(rec.percentiles.hcfa)}th (Z: {rec.zScores.hcfa.toFixed(1)})
+                                        </span>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <span style={{ color: "var(--text-dim)" }}>--</span>
+                                  )}
+                                </td>
+                                <td style={{ padding: "0.75rem 1rem", fontWeight: rec.headToHeightRatio ? "600" : "normal" }}>
+                                  {rec.headToHeightRatio ? `${(rec.headToHeightRatio * 100).toFixed(1)}%` : <span style={{ color: "var(--text-dim)" }}>--</span>}
+                                </td>
+                                <td style={{ padding: "0.75rem 1rem" }}>
+                                  {rec.zScores.wfl !== undefined && rec.classifications.wfl ? (
+                                    <>
+                                      <span className="module-badge" style={{ fontSize: "0.7rem", padding: "0.15rem 0.4rem", background: getClassificationDisplay(rec, "wfl").bg, color: getClassificationDisplay(rec, "wfl").color }}>
+                                        {rec.classifications.wfl.label}
+                                      </span>
+                                      <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", display: "block", marginTop: "2px" }}>
+                                        Z: {rec.zScores.wfl.toFixed(1)}
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <span style={{ color: "var(--text-dim)" }}>--</span>
+                                  )}
                                 </td>
                                 <td style={{ padding: "0.75rem 1rem" }}>
                                   <button
